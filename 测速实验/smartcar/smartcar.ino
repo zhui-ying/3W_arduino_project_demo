@@ -1,0 +1,328 @@
+/********************************* 深圳市航太电子有限公司 *******************************
+* 实 验 名 ：小车红外遥控测速实验
+* 实验说明 ：使用红外遥控来控制小车运动，同时通过串口将速度上传到PC   
+* 实验平台 ：流星5号、arduino UNO R3 
+* 连接方式 ：请参考interface.h文件
+* 注    意 ：指令必须连续发送才会使小车动作，若停止发送指令，则小车会停止
+* 作    者 ：航太电子产品研发部    QQ ：1909197536
+* 店    铺 ：http://shop120013844.taobao.com/
+****************************************************************************************/
+
+//#include <MsTimer2.h> 
+#include "interface.h"
+#include <IRremote.h>
+#include <Timer.h>//红外占用了timer2，这里我们使用软件定时器
+
+//变量定义
+int timer_count;
+unsigned int speed_count;//占空比计数器 50次一周期
+char front_left_speed_duty;
+char front_right_speed_duty;
+char behind_left_speed_duty;
+char behind_right_speed_duty;
+unsigned char tick_5ms = 0;//5ms计数器，作为主函数的基本周期
+unsigned char tick_1ms = 0;//1ms计数器，作为电机的基本计数器
+unsigned char tick_200ms = 0;
+unsigned char switch_flag=0;
+
+IRrecv irrecv(IRIN);
+decode_results results;
+Timer t;
+char ir_rec_flag;
+
+char ctrl_comm;//控制指令
+unsigned char continue_time = 0;
+//轮子直径66mm，光电码盘齿数为20，轮子周长 207mm = 20.7cm 
+//程序采用判断高低电平变化次数计数，也就是说轮子转一周计数次数为40
+//一个计数变化表示轮子跑过的距离为 20.7/40 = 0.5175cm
+
+unsigned char front_left_speed=0;
+unsigned char front_right_speed=0;
+
+unsigned char front_left_speed_temp=0;
+unsigned char front_right_speed_temp=0;
+
+static char front_left_io=0;
+static char front_right_io=0;
+static unsigned char count_5ms=0;
+
+//函数声明
+void CarMove();
+void CarGo();
+void CarBack();
+void CarLeft();
+void CarRight();
+void CarStop();
+
+
+
+/*******************************************************************************
+* 函 数 名 ：MeasureSpeed
+* 函数功能 ：速度测量，计算IO变化次数，该函数必须每5ms调用一次
+* 输    入 ：无
+* 输    出 ：无
+*******************************************************************************/
+void MeasureSpeed()
+{
+	static unsigned char count_5ms=0;
+	count_5ms++;
+	if(FRONT_LEFT_S_BIT != front_left_io)//发生电平变化
+	{
+		delayMicroseconds(100);//延时100us再次确认
+		if(FRONT_LEFT_S_BIT != front_left_io)
+		{
+			front_left_speed_temp++;
+			front_left_io = FRONT_LEFT_S_BIT;			
+		}
+	}
+	
+	if(FRONT_RIGHT_S_BIT != front_right_io)//发生电平变化
+	{
+		delayMicroseconds(100);//延时100us再次确认
+		if(FRONT_RIGHT_S_BIT != front_right_io)
+		{
+			front_right_speed_temp++;
+			front_right_io = FRONT_RIGHT_S_BIT;			
+		}
+	}
+	
+	if(count_5ms == 100)//每500ms获取一次速度
+	{
+		count_5ms = 0;
+		front_left_speed = front_left_speed_temp *2;//获取1s的高低电平变化次数
+		front_right_speed = front_right_speed_temp*2;
+		front_left_speed_temp = 0;
+		front_right_speed_temp = 0;
+		
+		front_left_speed = (unsigned char)(0.5175 * (double)front_left_speed + 0.5);//计算速度 cm/s 四舍五入
+		front_right_speed = (unsigned char)(0.5175 * (double)front_right_speed + 0.5);//计算速度 cm/s 四舍五入
+	}
+}
+
+#if 1
+
+//根据占空比驱动电机转动
+void CarMove()
+{
+	//左前轮
+	if(front_left_speed_duty > 0)//向前
+	{
+		if(speed_count < front_left_speed_duty)
+		{
+			FRONT_LEFT_GO;
+		}else
+		{
+			FRONT_LEFT_STOP;
+		}
+	}
+	else if(front_left_speed_duty < 0)//向后
+	{
+		if(speed_count < (-1)*front_left_speed_duty)
+		{
+			FRONT_LEFT_BACK;
+		}else
+		{
+			FRONT_LEFT_STOP;
+		}
+	}
+	else                //停止
+	{
+		FRONT_LEFT_STOP;
+	}
+	
+	//右前轮
+	if(front_right_speed_duty > 0)//向前
+	{
+		if(speed_count < front_right_speed_duty)
+		{
+			FRONT_RIGHT_GO;
+		}else                //停止
+		{
+			FRONT_RIGHT_STOP;
+		}
+	}
+	else if(front_right_speed_duty < 0)//向后
+	{
+		if(speed_count < (-1)*front_right_speed_duty)
+		{
+			FRONT_RIGHT_BACK;
+		}else                //停止
+		{
+			FRONT_RIGHT_STOP;
+		}
+	}
+	else                //停止
+	{
+		FRONT_RIGHT_STOP;
+	}
+}
+
+//向前
+void CarGo()
+{
+	front_left_speed_duty=SPEED_DUTY;
+	front_right_speed_duty=SPEED_DUTY;
+}
+
+//后退
+void CarBack()
+{
+	front_left_speed_duty=-SPEED_DUTY;
+	front_right_speed_duty=-SPEED_DUTY;
+}
+
+//向左
+void CarLeft()
+{
+	front_left_speed_duty=0;
+	front_right_speed_duty=SPEED_DUTY;
+}
+
+//向右
+void CarRight()
+{
+	front_left_speed_duty=SPEED_DUTY;
+	front_right_speed_duty=0;
+}
+
+//停止
+void CarStop()
+{
+	front_left_speed_duty=0;
+	front_right_speed_duty=0;
+}
+
+#endif
+
+void IOInit()
+{
+	//用户LED
+	pinMode(USER_PIN, OUTPUT);
+	//KEY
+	pinMode(KEY_L, INPUT_PULLUP);
+	pinMode(KEY_H, INPUT);
+	//红外
+	pinMode(IRIN, INPUT);
+	//超声波
+	pinMode(Echo, INPUT);
+	pinMode(Trig, OUTPUT);
+	//电机
+	pinMode(FRONT_LEFT_F_IO, OUTPUT);
+	pinMode(FRONT_LEFT_B_IO, OUTPUT);
+	pinMode(FRONT_RIGHT_F_IO, OUTPUT);
+	pinMode(FRONT_RIGHT_B_IO, OUTPUT);
+	//循迹
+	pinMode(SEARCH_M_IO, INPUT);
+	pinMode(SEARCH_R_IO, INPUT);
+	pinMode(SEARCH_L_IO, INPUT);
+	//避障
+	pinMode(VOID_R_PIN, INPUT);
+	pinMode(VOID_L_PIN, INPUT);	
+	//舵机
+	pinMode(DUOJI_IO, OUTPUT);
+	//测速
+	pinMode(FRONT_RIGHT_S_IO, INPUT);
+	pinMode(FRONT_LEFT_S_IO, INPUT);
+
+}
+
+//中断处理函数，改变灯的状态
+void flash()  
+{                        
+	tick_5ms++;
+	speed_count++;
+	if(speed_count >= 50)//50ms周期 //modfied by LC 2015.09.12 9:56
+	{
+		speed_count = 0;               
+	}
+	CarMove();
+}
+
+void setup() {
+	Serial.begin(9600);
+	Serial.println("system begin");
+	IOInit();
+	//MsTimer2::set(1, flash);   // 中断设置函数，每 1ms 进入一次中断
+	//MsTimer2::start();   //开始计时
+	t.every(1,flash);
+	irrecv.enableIRIn(); // Start the receiver
+	CarStop();
+}
+
+void loop() {  
+	//指令接收部分
+	if (irrecv.decode(&results)) 
+	{
+		unsigned int value_temp;
+		continue_time = 40;
+		value_temp = (results.value & 0xffff);//取后16位
+		if(value_temp != 0xffff)
+		{
+			if((value_temp & 0xff00)>>8 == ( ~(value_temp & 0xff) & 0xff))//校验
+			{
+				int ctrl_comm_temp = (value_temp & 0xff00)>>8 & 0xff;
+				ir_rec_flag = 1;
+				switch(ctrl_comm_temp)//指令转换
+				{
+				case 0x02: ctrl_comm = COMM_STOP; break;
+				case 0x62: ctrl_comm = COMM_UP; break;
+				case 0xA8: ctrl_comm = COMM_DOWN; break;
+				case 0xC2: ctrl_comm = COMM_RIGHT; break;
+				case 0x22: ctrl_comm = COMM_LEFT; break;
+				default: break;
+				}
+				Serial.println(ctrl_comm, HEX);
+			}
+		}
+		irrecv.resume(); // Receive the next value
+	}	      
+	t.update();
+	
+	//执行部分
+	if(tick_5ms >= 5)
+	{
+		tick_5ms = 0;
+		tick_200ms++;
+		if(tick_200ms >= 40)
+		{
+			tick_200ms = 0;
+			if(switch_flag)
+			{
+				Serial.print("Left Speed:");
+				Serial.print(front_left_speed);
+				Serial.print("  Right Speed:");
+				Serial.println(front_right_speed);
+				LED_ON;
+				switch_flag = 0;
+			}else
+			{
+				LED_OFF;
+				switch_flag = 1;				
+			}
+		}
+		MeasureSpeed();
+		continue_time--;//200ms 无接收指令就停车
+		if(continue_time == 0)
+		{
+			continue_time = 1;
+			CarStop();
+		}
+		//do something
+		if(ir_rec_flag == 1)//接收到蓝牙信号
+		{
+			ir_rec_flag = 0;
+			switch(ctrl_comm)
+			{
+			case COMM_UP:    CarGo();break;
+			case COMM_DOWN:  CarBack();break;
+			case COMM_LEFT:  CarLeft();break;
+			case COMM_RIGHT: CarRight();break;
+			case COMM_STOP:  CarStop();break;
+				default : break;
+			}
+		}
+	}             
+}
+
+
+
